@@ -154,13 +154,35 @@ jobs:
           
           cd /app/insightpulse
           
-          # Create environment file
-          cat > .env.prod << EOF
+          # CRITICAL: Create .env.prod file with ALL three passwords
+          echo "Creating .env.prod file..."
+          cat > .env.prod << 'EOF'
         DB_PASSWORD=$DB_PASSWORD
         REDIS_PASSWORD=$REDIS_PASSWORD
         JWT_SECRET_KEY=$JWT_SECRET_KEY
         EOF
+          
+          # Make sure file has correct permissions
           chmod 600 .env.prod
+          
+          # CRITICAL: Verify file was created and has content
+          echo "Verifying .env.prod file..."
+          if [ ! -f .env.prod ]; then
+            echo "ERROR: .env.prod was not created!"
+            exit 1
+          fi
+          
+          echo "Contents of .env.prod:"
+          cat .env.prod
+          
+          # Count variables
+          VAR_COUNT=$(grep -c "=" .env.prod || true)
+          if [ "$VAR_COUNT" -lt 3 ]; then
+            echo "ERROR: .env.prod only has $VAR_COUNT variables, expected 3!"
+            exit 1
+          fi
+          
+          echo "✓ .env.prod file created with $(grep -c "=" .env.prod) variables"
           
           # Initialize or pull repo
           if [ -d .git ]; then
@@ -180,19 +202,53 @@ jobs:
           echo "Stopping old services..."
           docker-compose -f docker-compose.prod.yml down || true
           
-          # Start new services
-          echo "Starting services..."
+          # CRITICAL: Source the .env.prod file and start services
+          echo "Starting services with environment variables..."
+          set -a
+          source .env.prod
+          set +a
+          
+          # Verify variables are loaded
+          echo "Verifying environment variables are loaded..."
+          if [ -z "$DB_PASSWORD" ]; then
+            echo "ERROR: DB_PASSWORD not loaded!"
+            exit 1
+          fi
+          if [ -z "$REDIS_PASSWORD" ]; then
+            echo "ERROR: REDIS_PASSWORD not loaded!"
+            exit 1
+          fi
+          if [ -z "$JWT_SECRET_KEY" ]; then
+            echo "ERROR: JWT_SECRET_KEY not loaded!"
+            exit 1
+          fi
+          echo "✓ All environment variables loaded successfully"
+          
+          # Start services
           docker-compose -f docker-compose.prod.yml up -d
           
           # Wait for services
-          echo "Waiting for services to start..."
-          sleep 15
+          echo "Waiting for services to start and become healthy..."
+          sleep 20
+          
+          # Check service health
+          echo "Checking service status..."
+          docker-compose -f docker-compose.prod.yml ps
+          
+          # Verify services are healthy
+          POSTGRES_HEALTH=$(docker-compose -f docker-compose.prod.yml exec -T postgres pg_isready -U postgres 2>/dev/null || echo "not ready")
+          REDIS_HEALTH=$(docker-compose -f docker-compose.prod.yml exec -T redis redis-cli ping 2>/dev/null || echo "not ready")
+          
+          echo "PostgreSQL health: $POSTGRES_HEALTH"
+          echo "Redis health: $REDIS_HEALTH"
           
           # Run database migrations
           echo "Running database migrations..."
-          docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || true
+          docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || echo "⚠ Migrations warning (may be first run)"
           
+          echo ""
           echo "===== Deployment Complete ====="
           echo "Frontend: http://3.141.167.20:3000"
           echo "API: http://3.141.167.20:5228/api/health"
+          echo "===== Deployment Complete ====="
         DEPLOY_SCRIPT
