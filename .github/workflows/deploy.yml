@@ -136,79 +136,66 @@ jobs:
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Setup SSH directory
         mkdir -p ~/.ssh
-        
-        # Write private key to file
-        cat > ~/.ssh/deploy_key << 'KEYFILE'
-        ${{ secrets.DEPLOY_KEY }}
-        KEYFILE
-        
-        # Fix permissions
+        echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
         chmod 600 ~/.ssh/deploy_key
+        ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
         
-        # Add known host
-        ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+        ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          $DEPLOY_USER@$DEPLOY_HOST << 'DEPLOY_COMMANDS'
         
-        # Create deployment script
-        cat > /tmp/deploy.sh << 'SCRIPT'
-        #!/bin/bash
         set -e
-        
         cd /app/insightpulse
         
+        echo "===== Deployment Started ====="
+        
         echo "Creating .env.prod..."
-        cat > .env.prod << 'EOF'
-        DB_PASSWORD=$1
-        REDIS_PASSWORD=$2
-        JWT_SECRET_KEY=$3
-        EOF
-        
+        cat > .env.prod << 'ENVFILE'
+        DB_PASSWORD=$DB_PASSWORD
+        REDIS_PASSWORD=$REDIS_PASSWORD
+        JWT_SECRET_KEY=$JWT_SECRET_KEY
+        ENVFILE
         chmod 600 .env.prod
-        
-        echo "Environment file created"
+        echo "✓ Environment file created"
         
         echo "Pulling latest code..."
         git pull origin main || git clone https://github.com/SaiPranay2011/InsightPulse.git .
+        echo "✓ Code updated"
         
         echo "Logging into Docker..."
-        echo "$4" | docker login -u SaiPranay2011 --password-stdin ghcr.io || true
+        echo "$GITHUB_TOKEN" | docker login -u SaiPranay2011 --password-stdin ghcr.io || true
+        echo "✓ Docker login complete"
         
-        echo "Pulling images..."
+        echo "Pulling Docker images..."
         docker-compose -f docker-compose.prod.yml pull
+        echo "✓ Images pulled"
         
         echo "Stopping old services..."
         docker-compose -f docker-compose.prod.yml down || true
+        echo "✓ Old services stopped"
         
-        echo "Cleaning Docker..."
-        docker system prune -af
+        echo "Cleaning Docker resources..."
+        docker system prune -af > /dev/null
+        echo "✓ Docker cleaned"
         
         echo "Starting services..."
         docker-compose -f docker-compose.prod.yml up -d
+        echo "✓ Services started"
         
-        echo "Waiting 60 seconds..."
+        echo "Waiting 60 seconds for services to stabilize..."
         sleep 60
         
-        echo "Service status:"
+        echo ""
+        echo "Service Status:"
         docker-compose -f docker-compose.prod.yml ps
         
-        echo "Testing API..."
-        curl http://localhost:5228/api/health || echo "API still starting..."
+        echo ""
+        echo "Testing API health..."
+        curl -s http://localhost:5228/api/health || echo "API not ready yet"
         
         echo ""
-        echo "✅ Deployment complete!"
-        echo "Frontend: http://${{ secrets.DEPLOY_HOST }}:3000"
-        echo "API: http://${{ secrets.DEPLOY_HOST }}:5228/api/health"
-        SCRIPT
+        echo "===== Deployment Complete ====="
+        echo "Frontend: http://$DEPLOY_HOST:3000"
+        echo "API: http://$DEPLOY_HOST:5228/api/health"
         
-        chmod +x /tmp/deploy.sh
-        
-        # Execute on server
-        echo "Deploying to server..."
-        ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
-          ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
-          /tmp/deploy.sh \
-          "${{ secrets.DB_PASSWORD }}" \
-          "${{ secrets.REDIS_PASSWORD }}" \
-          "${{ secrets.JWT_SECRET_KEY }}" \
-          "${{ secrets.GITHUB_TOKEN }}"
+        DEPLOY_COMMANDS
