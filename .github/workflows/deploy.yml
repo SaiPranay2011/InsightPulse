@@ -138,137 +138,117 @@ jobs:
         REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
       run: |
+        # Create temporary script file with environment variables
+        mkdir -p /tmp/deploy
+        
+        cat > /tmp/deploy/deploy.sh << 'DEPLOY_BASH'
+        #!/bin/bash
+        set -e
+        
+        echo "===== Starting Deployment ====="
+        
+        # Variables are passed from GitHub Actions
+        DB_PASSWORD="$1"
+        REDIS_PASSWORD="$2"
+        JWT_SECRET_KEY="$3"
+        DEPLOY_USER="$4"
+        
+        # Verify variables
+        echo "Verifying environment variables..."
+        if [ -z "$DB_PASSWORD" ]; then
+          echo "ERROR: DB_PASSWORD is empty!"
+          exit 1
+        fi
+        if [ -z "$REDIS_PASSWORD" ]; then
+          echo "ERROR: REDIS_PASSWORD is empty!"
+          exit 1
+        fi
+        if [ -z "$JWT_SECRET_KEY" ]; then
+          echo "ERROR: JWT_SECRET_KEY is empty!"
+          exit 1
+        fi
+        echo "✓ All environment variables verified"
+        
+        # Ensure permissions
+        sudo chown -R $DEPLOY_USER:$DEPLOY_USER /app/insightpulse || true
+        sudo chmod -R 755 /app/insightpulse || true
+        
+        cd /app/insightpulse
+        
+        # Create .env.prod file
+        echo "Creating .env.prod..."
+        cat > .env.prod << ENVFILE
+        DB_PASSWORD=$DB_PASSWORD
+        REDIS_PASSWORD=$REDIS_PASSWORD
+        JWT_SECRET_KEY=$JWT_SECRET_KEY
+        ENVFILE
+        
+        chmod 600 .env.prod
+        
+        echo "Contents of .env.prod:"
+        cat .env.prod
+        
+        # Pull latest code
+        if [ -d .git ]; then
+          echo "Pulling latest code..."
+          git pull origin main || (git fetch origin && git reset --hard origin/main)
+        else
+          echo "Cloning repository..."
+          git clone https://github.com/SaiPranay2011/InsightPulse.git .
+        fi
+        
+        # Login to Docker registry
+        echo "Logging into Docker registry..."
+        echo "${{ secrets.GITHUB_TOKEN }}" | docker login -u ${{ github.actor }} --password-stdin ghcr.io || true
+        
+        # Pull latest images
+        echo "Pulling Docker images..."
+        docker-compose -f docker-compose.prod.yml pull || true
+        
+        # Stop old services
+        echo "Stopping old services..."
+        docker-compose -f docker-compose.prod.yml down || true
+        
+        # Clean up space if needed
+        echo "Cleaning up Docker resources..."
+        docker system prune -af || true
+        
+        # Start services with environment file
+        echo "Starting services..."
+        docker-compose -f docker-compose.prod.yml up -d
+        
+        # Wait for services
+        echo "Waiting for services to start..."
+        sleep 25
+        
+        # Check status
+        echo "Checking service status..."
+        docker-compose -f docker-compose.prod.yml ps
+        
+        # Verify health
+        echo "Verifying service health..."
+        if docker-compose -f docker-compose.prod.yml ps | grep -q "unhealthy"; then
+          echo "⚠ Warning: Some services are unhealthy"
+          docker-compose -f docker-compose.prod.yml logs
+        fi
+        
+        # Run migrations
+        echo "Running database migrations..."
+        docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || echo "⚠ Migrations skipped"
+        
+        echo ""
+        echo "===== Deployment Complete ====="
+        echo "Frontend: http://3.141.167.20:3000"
+        echo "API: http://3.141.167.20:5228/api/health"
+        DEPLOY_BASH
+        
+        chmod +x /tmp/deploy/deploy.sh
+        
+        # Setup SSH
         mkdir -p ~/.ssh
         echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
         chmod 600 ~/.ssh/deploy_key
         ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
         
-        ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST bash << 'DEPLOY_SCRIPT'
-          set -e
-          
-          echo "===== Starting Deployment ====="
-          
-          # Ensure permissions
-          sudo chown -R $DEPLOY_USER:$DEPLOY_USER /app/insightpulse || true
-          sudo chmod -R 755 /app/insightpulse || true
-          
-          cd /app/insightpulse
-          
-          # CRITICAL: Create .env.prod file EXACTLY with the variables
-          echo "Creating .env.prod file..."
-          
-          # Use a script file instead of heredoc to avoid variable expansion issues
-          cat > create_env.sh << 'ENVSCRIPT'
-        #!/bin/bash
-        cat > .env.prod << 'ENVFILE'
-        DB_PASSWORD=$DB_PASSWORD
-        REDIS_PASSWORD=$REDIS_PASSWORD
-        JWT_SECRET_KEY=$JWT_SECRET_KEY
-        ENVFILE
-        ENVSCRIPT
-          
-          chmod +x create_env.sh
-          
-          # Execute the script with environment variables passed
-          DB_PASSWORD="$DB_PASSWORD" REDIS_PASSWORD="$REDIS_PASSWORD" JWT_SECRET_KEY="$JWT_SECRET_KEY" bash create_env.sh
-          
-          # Make sure file has correct permissions
-          chmod 600 .env.prod
-          
-          # CRITICAL: Verify file was created and has content
-          echo "Verifying .env.prod file..."
-          if [ ! -f .env.prod ]; then
-            echo "ERROR: .env.prod was not created!"
-            exit 1
-          fi
-          
-          echo "Contents of .env.prod:"
-          cat .env.prod
-          
-          # Count variables
-          VAR_COUNT=$(grep -c "=" .env.prod || true)
-          if [ "$VAR_COUNT" -lt 3 ]; then
-            echo "ERROR: .env.prod only has $VAR_COUNT variables, expected 3!"
-            exit 1
-          fi
-          
-          echo "✓ .env.prod file created with $(grep -c "=" .env.prod) variables"
-          
-          # Initialize or pull repo
-          if [ -d .git ]; then
-            echo "Pulling latest code..."
-            git pull origin main || (git fetch origin && git reset --hard origin/main)
-          else
-            echo "Cloning repository..."
-            git clone https://github.com/SaiPranay2011/InsightPulse.git .
-          fi
-          
-          # Copy .env.prod from previous step (in case git pull overwrote it)
-          echo "Restoring .env.prod..."
-          cat > .env.prod << 'ENVFILE'
-        DB_PASSWORD=$DB_PASSWORD
-        REDIS_PASSWORD=$REDIS_PASSWORD
-        JWT_SECRET_KEY=$JWT_SECRET_KEY
-        ENVFILE
-          chmod 600 .env.prod
-          
-          # Pull latest images
-          echo "Pulling Docker images..."
-          docker login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ghcr.io || true
-          docker-compose -f docker-compose.prod.yml pull || true
-          
-          # Stop old services
-          echo "Stopping old services..."
-          docker-compose -f docker-compose.prod.yml down || true
-          
-          # CRITICAL: Export variables and start services
-          echo "Starting services with environment variables..."
-          export DB_PASSWORD="$DB_PASSWORD"
-          export REDIS_PASSWORD="$REDIS_PASSWORD"
-          export JWT_SECRET_KEY="$JWT_SECRET_KEY"
-          
-          # Verify variables are exported
-          echo "Verifying environment variables..."
-          if [ -z "$DB_PASSWORD" ]; then
-            echo "ERROR: DB_PASSWORD is empty!"
-            exit 1
-          fi
-          if [ -z "$REDIS_PASSWORD" ]; then
-            echo "ERROR: REDIS_PASSWORD is empty!"
-            exit 1
-          fi
-          if [ -z "$JWT_SECRET_KEY" ]; then
-            echo "ERROR: JWT_SECRET_KEY is empty!"
-            exit 1
-          fi
-          echo "✓ All environment variables set correctly"
-          
-          # Start services using docker-compose with environment variables
-          docker-compose -f docker-compose.prod.yml up -d
-          
-          # Wait for services
-          echo "Waiting for services to start and become healthy..."
-          sleep 20
-          
-          # Check service health
-          echo "Checking service status..."
-          docker-compose -f docker-compose.prod.yml ps
-          
-          # Verify services are healthy
-          echo "Verifying service health..."
-          POSTGRES_HEALTH=$(docker-compose -f docker-compose.prod.yml exec -T postgres pg_isready -U postgres 2>/dev/null || echo "not ready")
-          REDIS_HEALTH=$(docker-compose -f docker-compose.prod.yml exec -T redis redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null || echo "not ready")
-          
-          echo "PostgreSQL health: $POSTGRES_HEALTH"
-          echo "Redis health: $REDIS_HEALTH"
-          
-          # Run database migrations
-          echo "Running database migrations..."
-          docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || echo "⚠ Migrations may have already run"
-          
-          echo ""
-          echo "===== Deployment Complete ====="
-          echo "Frontend: http://3.141.167.20:3000"
-          echo "API: http://3.141.167.20:5228/api/health"
-          echo "===== Deployment Complete ====="
-        DEPLOY_SCRIPT
+        # Execute deploy script on server
+        ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST bash -s "$DB_PASSWORD" "$REDIS_PASSWORD" "$JWT_SECRET_KEY" "$DEPLOY_USER" < /tmp/deploy/deploy.sh
