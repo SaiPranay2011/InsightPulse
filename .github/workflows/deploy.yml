@@ -134,7 +134,6 @@ jobs:
         DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         mkdir -p ~/.ssh
         echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
@@ -149,46 +148,63 @@ jobs:
         
         echo "===== Deployment Started ====="
         
-        echo "Creating .env.prod..."
+        # Update .env.prod with latest secrets
+        echo "Updating .env.prod..."
         cat > .env.prod << 'ENVFILE'
         DB_PASSWORD=$DB_PASSWORD
         REDIS_PASSWORD=$REDIS_PASSWORD
         JWT_SECRET_KEY=$JWT_SECRET_KEY
         ENVFILE
         chmod 600 .env.prod
-        echo "✓ Environment file created"
+        echo "✓ Environment file updated"
         
+        # Pull latest code
         echo "Pulling latest code..."
         git pull origin main || git clone https://github.com/SaiPranay2011/InsightPulse.git .
         echo "✓ Code updated"
         
+        # Login to Docker
         echo "Logging into Docker..."
         echo "$GITHUB_TOKEN" | docker login -u SaiPranay2011 --password-stdin ghcr.io || true
         echo "✓ Docker login complete"
         
+        # Pull images
         echo "Pulling Docker images..."
         docker-compose -f docker-compose.prod.yml pull
         echo "✓ Images pulled"
         
+        # Stop old services
         echo "Stopping old services..."
         docker-compose -f docker-compose.prod.yml down || true
         echo "✓ Old services stopped"
         
+        # Clean Docker
         echo "Cleaning Docker resources..."
         docker system prune -af > /dev/null
         echo "✓ Docker cleaned"
         
+        # Start services with environment variables loaded from .env.prod
         echo "Starting services..."
+        set -a
+        source .env.prod
+        set +a
         docker-compose -f docker-compose.prod.yml up -d
         echo "✓ Services started"
         
-        echo "Waiting 60 seconds for services to stabilize..."
-        sleep 60
+        # Wait for services
+        echo "Waiting 90 seconds for services to stabilize..."
+        sleep 90
         
+        # Check status
         echo ""
         echo "Service Status:"
         docker-compose -f docker-compose.prod.yml ps
         
+        # Run migrations
+        echo "Running database migrations..."
+        docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || true
+        
+        # Test API
         echo ""
         echo "Testing API health..."
         curl -s http://localhost:5228/api/health || echo "API not ready yet"
