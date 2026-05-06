@@ -143,7 +143,7 @@ jobs:
         chmod 600 ~/.ssh/deploy_key
         ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
         
-        ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST << 'DEPLOY_SCRIPT'
+        ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST bash << 'DEPLOY_SCRIPT'
           set -e
           
           echo "===== Starting Deployment ====="
@@ -154,13 +154,23 @@ jobs:
           
           cd /app/insightpulse
           
-          # CRITICAL: Create .env.prod file with ALL three passwords
+          # CRITICAL: Create .env.prod file EXACTLY with the variables
           echo "Creating .env.prod file..."
-          cat > .env.prod << 'EOF'
+          
+          # Use a script file instead of heredoc to avoid variable expansion issues
+          cat > create_env.sh << 'ENVSCRIPT'
+        #!/bin/bash
+        cat > .env.prod << 'ENVFILE'
         DB_PASSWORD=$DB_PASSWORD
         REDIS_PASSWORD=$REDIS_PASSWORD
         JWT_SECRET_KEY=$JWT_SECRET_KEY
-        EOF
+        ENVFILE
+        ENVSCRIPT
+          
+          chmod +x create_env.sh
+          
+          # Execute the script with environment variables passed
+          DB_PASSWORD="$DB_PASSWORD" REDIS_PASSWORD="$REDIS_PASSWORD" JWT_SECRET_KEY="$JWT_SECRET_KEY" bash create_env.sh
           
           # Make sure file has correct permissions
           chmod 600 .env.prod
@@ -193,6 +203,15 @@ jobs:
             git clone https://github.com/SaiPranay2011/InsightPulse.git .
           fi
           
+          # Copy .env.prod from previous step (in case git pull overwrote it)
+          echo "Restoring .env.prod..."
+          cat > .env.prod << 'ENVFILE'
+        DB_PASSWORD=$DB_PASSWORD
+        REDIS_PASSWORD=$REDIS_PASSWORD
+        JWT_SECRET_KEY=$JWT_SECRET_KEY
+        ENVFILE
+          chmod 600 .env.prod
+          
           # Pull latest images
           echo "Pulling Docker images..."
           docker login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ghcr.io || true
@@ -202,29 +221,29 @@ jobs:
           echo "Stopping old services..."
           docker-compose -f docker-compose.prod.yml down || true
           
-          # CRITICAL: Source the .env.prod file and start services
+          # CRITICAL: Export variables and start services
           echo "Starting services with environment variables..."
-          set -a
-          source .env.prod
-          set +a
+          export DB_PASSWORD="$DB_PASSWORD"
+          export REDIS_PASSWORD="$REDIS_PASSWORD"
+          export JWT_SECRET_KEY="$JWT_SECRET_KEY"
           
-          # Verify variables are loaded
-          echo "Verifying environment variables are loaded..."
+          # Verify variables are exported
+          echo "Verifying environment variables..."
           if [ -z "$DB_PASSWORD" ]; then
-            echo "ERROR: DB_PASSWORD not loaded!"
+            echo "ERROR: DB_PASSWORD is empty!"
             exit 1
           fi
           if [ -z "$REDIS_PASSWORD" ]; then
-            echo "ERROR: REDIS_PASSWORD not loaded!"
+            echo "ERROR: REDIS_PASSWORD is empty!"
             exit 1
           fi
           if [ -z "$JWT_SECRET_KEY" ]; then
-            echo "ERROR: JWT_SECRET_KEY not loaded!"
+            echo "ERROR: JWT_SECRET_KEY is empty!"
             exit 1
           fi
-          echo "✓ All environment variables loaded successfully"
+          echo "✓ All environment variables set correctly"
           
-          # Start services
+          # Start services using docker-compose with environment variables
           docker-compose -f docker-compose.prod.yml up -d
           
           # Wait for services
@@ -236,15 +255,16 @@ jobs:
           docker-compose -f docker-compose.prod.yml ps
           
           # Verify services are healthy
+          echo "Verifying service health..."
           POSTGRES_HEALTH=$(docker-compose -f docker-compose.prod.yml exec -T postgres pg_isready -U postgres 2>/dev/null || echo "not ready")
-          REDIS_HEALTH=$(docker-compose -f docker-compose.prod.yml exec -T redis redis-cli ping 2>/dev/null || echo "not ready")
+          REDIS_HEALTH=$(docker-compose -f docker-compose.prod.yml exec -T redis redis-cli -a "$REDIS_PASSWORD" ping 2>/dev/null || echo "not ready")
           
           echo "PostgreSQL health: $POSTGRES_HEALTH"
           echo "Redis health: $REDIS_HEALTH"
           
           # Run database migrations
           echo "Running database migrations..."
-          docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || echo "⚠ Migrations warning (may be first run)"
+          docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || echo "⚠ Migrations may have already run"
           
           echo ""
           echo "===== Deployment Complete ====="
