@@ -1,0 +1,22 @@
+# Backend
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.suo
+appsettings.Production.json
+
+# Frontend
+node_modules/
+.next/
+out/
+build/
+.env.local
+.env.production.local
+.DS_Store
+
+# Deployment
+.env.prod
+deploy_key*
+ssl/

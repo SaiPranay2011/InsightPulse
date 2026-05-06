@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="InsightPulse.API/InsightPulse.API.csproj" />
+  <Project Path="InsightPulse.Core/InsightPulse.Core.csproj" />
+</Solution>

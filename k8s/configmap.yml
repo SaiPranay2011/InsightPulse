@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: insightpulse-config
+  namespace: insightpulse
+data:
+  ASPNETCORE_ENVIRONMENT: "Production"
+  NEXT_PUBLIC_API_URL: "https://api.insightpulse.com"
+  NODE_ENV: "production"

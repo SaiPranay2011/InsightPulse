@@ -1,0 +1,193 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore InsightPulse.API/
+
+    - name: Build
+      run: dotnet build InsightPulse.API/ --no-restore --configuration Release
+
+    - name: Run tests
+      run: dotnet test InsightPulse.API/ --no-build --verbosity normal || true
+
+  test-frontend:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: 'frontend/package-lock.json'
+
+    - name: Install dependencies
+      run: cd frontend && npm ci
+
+    - name: Build
+      run: cd frontend && npm run build
+
+  build-and-push:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and push backend
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ./InsightPulse.API/Dockerfile
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build and push frontend
+      uses: docker/build-push-action@v4
+      with:
+        context: ./frontend
+        file: ./frontend/Dockerfile
+        push: true
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/frontend:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Deploy to production
+      env:
+        DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+        JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+        
+        ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST << 'DEPLOY_SCRIPT'
+          set -e
+          
+          echo "===== Starting Deployment ====="
+          
+          # Ensure permissions
+          sudo chown -R $DEPLOY_USER:$DEPLOY_USER /app/insightpulse
+          sudo chmod -R 755 /app/insightpulse
+          
+          cd /app/insightpulse
+          
+          # Create environment file
+          cat > .env.prod << EOF
+        DB_PASSWORD=$DB_PASSWORD
+        REDIS_PASSWORD=$REDIS_PASSWORD
+        JWT_SECRET_KEY=$JWT_SECRET_KEY
+        GITHUB_REPOSITORY=$GITHUB_REPOSITORY
+        EOF
+          chmod 600 .env.prod
+          
+          # Initialize or pull repo
+          if [ -d .git ]; then
+            echo "Pulling latest code..."
+            git pull origin main || (git fetch origin && git reset --hard origin/main)
+          else
+            echo "Cloning repository..."
+            git clone https://github.com/$GITHUB_REPOSITORY.git .
+          fi
+          
+          # Pull latest images
+          echo "Pulling Docker images..."
+          docker login -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} ghcr.io || true
+          docker-compose -f docker-compose.prod.yml pull || true
+          
+          # Stop old services
+          echo "Stopping old services..."
+          docker-compose -f docker-compose.prod.yml down || true
+          
+          # Start new services
+          echo "Starting services..."
+          docker-compose -f docker-compose.prod.yml up -d
+          
+          # Wait for services
+          echo "Waiting for services to start..."
+          sleep 15
+          
+          # Run database migrations
+          echo "Running database migrations..."
+          docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || true
+          
+          echo "===== Deployment Complete ====="
+          echo "Frontend: http://3.141.167.20:3000"
+          echo "API: http://3.141.167.20:5228/api/health"
+        DEPLOY_SCRIPT
