@@ -3,6 +3,7 @@
 services:
   postgres:
     image: postgres:15
+    env_file: .env.prod
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -20,6 +21,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    env_file: .env.prod
     command: redis-server --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
@@ -35,6 +37,7 @@ services:
 
   api:
     image: ghcr.io/saipranay2011/insightpulse/api:latest
+    env_file: .env.prod
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: Server=postgres;Port=5432;Database=insightpulse_prod;User Id=postgres;Password=${DB_PASSWORD};
@@ -53,15 +56,17 @@ services:
       - insightpulse
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5228/api/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5228/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s
 
   frontend:
     image: ghcr.io/saipranay2011/insightpulse/frontend:latest
+    env_file: .env.prod
     environment:
-      NEXT_PUBLIC_API_URL: http://3.141.167.20:5228/api
+      NEXT_PUBLIC_API_URL: http://3.22.167.100:5228/api
       NODE_ENV: production
     ports:
       - "3000:3000"

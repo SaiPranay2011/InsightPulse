@@ -18,8 +18,6 @@ build/
 
 # Deployment
 .env.prod
-deploy_key
-deploy_key.pub
 deploy_key*
 ssl/
 

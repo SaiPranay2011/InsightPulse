@@ -42,7 +42,7 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v3
       with:
-        dotnet-version: '9.0.x'  # ← Change from 10.0.x to 9.0.x
+        dotnet-version: '9.0.x'
 
     - name: Restore dependencies
       run: dotnet restore InsightPulse.API/
@@ -71,9 +71,6 @@ jobs:
 
     - name: Build
       run: cd frontend && npm run build
-
-    - name: Run linter
-      run: cd frontend && npm run lint || true
 
   build-and-push:
     needs: [test-backend, test-frontend]
@@ -131,13 +128,11 @@ jobs:
 
     - name: Deploy to production
       run: |
-        # Setup SSH
         mkdir -p ~/.ssh
         echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/deploy_key
         chmod 600 ~/.ssh/deploy_key
         ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
         
-        # Create deploy script with environment variables embedded
         cat > /tmp/deploy.sh << 'SCRIPT'
         #!/bin/bash
         set -e
@@ -181,13 +176,12 @@ jobs:
         curl http://localhost:5228/api/health || echo "API starting..."
         
         echo "✅ Deployment complete!"
-        echo "Frontend: http://3.141.167.20:3000"
-        echo "API: http://3.141.167.20:5228/api/health"
+        echo "Frontend: http://3.22.167.100:3000"
+        echo "API: http://3.22.167.100:5228/api/health"
         SCRIPT
         
         chmod +x /tmp/deploy.sh
         
-        # Execute on server with secrets passed as arguments
         ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
           /tmp/deploy.sh \
           "${{ secrets.DB_PASSWORD }}" \
