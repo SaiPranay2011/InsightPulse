@@ -130,65 +130,67 @@ jobs:
     - uses: actions/checkout@v3
 
     - name: Deploy to production
-      env:
-        DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-        DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-        REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-        JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
       run: |
+        # Setup SSH
         mkdir -p ~/.ssh
-        echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+        echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/deploy_key
         chmod 600 ~/.ssh/deploy_key
-        ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+        ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
         
-        ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST << 'EOF'
-          set -e
-          
-          cd /app/insightpulse
-          
-          echo "Creating .env.prod with passwords..."
-          cat > .env.prod << 'ENVFILE'
-        DB_PASSWORD=$DB_PASSWORD
-        REDIS_PASSWORD=$REDIS_PASSWORD
-        JWT_SECRET_KEY=$JWT_SECRET_KEY
-        ENVFILE
-          
-          chmod 600 .env.prod
-          cat .env.prod
-          
-          echo "Pulling latest code..."
-          git pull origin main || git clone https://github.com/SaiPranay2011/InsightPulse.git .
-          
-          echo "Logging in to Docker..."
-          echo "$GITHUB_TOKEN" | docker login -u ${{ github.actor }} --password-stdin ghcr.io 2>/dev/null || true
-          
-          echo "Pulling Docker images..."
-          docker-compose -f docker-compose.prod.yml pull
-          
-          echo "Stopping old services..."
-          docker-compose -f docker-compose.prod.yml down || true
-          
-          echo "Cleaning Docker resources..."
-          docker system prune -af
-          
-          echo "Starting services..."
-          docker-compose -f docker-compose.prod.yml up -d
-          
-          echo "Waiting 30 seconds for services..."
-          sleep 30
-          
-          echo "Service status:"
-          docker-compose -f docker-compose.prod.yml ps
-          
-          echo "Checking logs..."
-          docker-compose -f docker-compose.prod.yml logs --tail=20
-          
-          echo "Running migrations..."
-          docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || true
-          
-          echo "✅ Deployment complete!"
-          echo "Frontend: http://3.141.167.20:3000"
-          echo "API: http://3.141.167.20:5228/api/health"
+        # Create deploy script with environment variables embedded
+        cat > /tmp/deploy.sh << 'SCRIPT'
+        #!/bin/bash
+        set -e
+        
+        cd /app/insightpulse
+        
+        echo "Creating .env.prod..."
+        cat > .env.prod << 'EOF'
+        DB_PASSWORD=$1
+        REDIS_PASSWORD=$2
+        JWT_SECRET_KEY=$3
         EOF
+        
+        chmod 600 .env.prod
+        
+        echo "Pulling latest code..."
+        git pull origin main || git clone https://github.com/SaiPranay2011/InsightPulse.git .
+        
+        echo "Logging into Docker..."
+        echo "$4" | docker login -u ${{ github.actor }} --password-stdin ghcr.io || true
+        
+        echo "Pulling images..."
+        docker-compose -f docker-compose.prod.yml pull
+        
+        echo "Stopping old services..."
+        docker-compose -f docker-compose.prod.yml down || true
+        
+        echo "Cleaning Docker..."
+        docker system prune -af
+        
+        echo "Starting services..."
+        docker-compose -f docker-compose.prod.yml up -d
+        
+        echo "Waiting 60 seconds..."
+        sleep 60
+        
+        echo "Service status:"
+        docker-compose -f docker-compose.prod.yml ps
+        
+        echo "Testing API..."
+        curl http://localhost:5228/api/health || echo "API starting..."
+        
+        echo "✅ Deployment complete!"
+        echo "Frontend: http://3.141.167.20:3000"
+        echo "API: http://3.141.167.20:5228/api/health"
+        SCRIPT
+        
+        chmod +x /tmp/deploy.sh
+        
+        # Execute on server with secrets passed as arguments
+        ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+          /tmp/deploy.sh \
+          "${{ secrets.DB_PASSWORD }}" \
+          "${{ secrets.REDIS_PASSWORD }}" \
+          "${{ secrets.JWT_SECRET_KEY }}" \
+          "${{ secrets.GITHUB_TOKEN }}"
