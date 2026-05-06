@@ -18,5 +18,17 @@ build/
 
 # Deployment
 .env.prod
+deploy_key
+deploy_key.pub
 deploy_key*
 ssl/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store

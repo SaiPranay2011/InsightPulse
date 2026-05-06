@@ -33,7 +33,7 @@ services:
       retries: 5
 
   api:
-    image: ghcr.io/${GITHUB_REPOSITORY}/api:latest
+    image: ghcr.io/saipranay2011/insightpulse/api:latest
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: Server=postgres;Port=5432;Database=insightpulse_prod;User Id=postgres;Password=${DB_PASSWORD};
@@ -58,7 +58,7 @@ services:
       retries: 3
 
   frontend:
-    image: ghcr.io/${GITHUB_REPOSITORY}/frontend:latest
+    image: ghcr.io/saipranay2011/insightpulse/frontend:latest
     environment:
       NEXT_PUBLIC_API_URL: http://3.141.167.20:5228/api
       NODE_ENV: production

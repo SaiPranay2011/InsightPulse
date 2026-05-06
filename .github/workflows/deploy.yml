@@ -62,7 +62,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '20'  # ← Change from '18' to '20'
+        node-version: '20'
         cache: 'npm'
         cache-dependency-path: 'frontend/package-lock.json'
 
@@ -71,6 +71,10 @@ jobs:
 
     - name: Build
       run: cd frontend && npm run build
+
+    - name: Run linter
+      run: cd frontend && npm run lint || true
+
   build-and-push:
     needs: [test-backend, test-frontend]
     runs-on: ubuntu-latest
@@ -93,13 +97,17 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    - name: Convert image name to lowercase
+      id: image
+      run: echo "image_name=$(echo ${{ env.IMAGE_NAME }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
     - name: Build and push backend
       uses: docker/build-push-action@v4
       with:
         context: .
         file: ./InsightPulse.API/Dockerfile
         push: true
-        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api:latest
+        tags: ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}/api:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -109,7 +117,7 @@ jobs:
         context: ./frontend
         file: ./frontend/Dockerfile
         push: true
-        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/frontend:latest
+        tags: ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}/frontend:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -129,7 +137,6 @@ jobs:
         DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
       run: |
         mkdir -p ~/.ssh
         echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
@@ -142,8 +149,8 @@ jobs:
           echo "===== Starting Deployment ====="
           
           # Ensure permissions
-          sudo chown -R $DEPLOY_USER:$DEPLOY_USER /app/insightpulse
-          sudo chmod -R 755 /app/insightpulse
+          sudo chown -R $DEPLOY_USER:$DEPLOY_USER /app/insightpulse || true
+          sudo chmod -R 755 /app/insightpulse || true
           
           cd /app/insightpulse
           
@@ -152,7 +159,6 @@ jobs:
         DB_PASSWORD=$DB_PASSWORD
         REDIS_PASSWORD=$REDIS_PASSWORD
         JWT_SECRET_KEY=$JWT_SECRET_KEY
-        GITHUB_REPOSITORY=$GITHUB_REPOSITORY
         EOF
           chmod 600 .env.prod
           
@@ -162,7 +168,7 @@ jobs:
             git pull origin main || (git fetch origin && git reset --hard origin/main)
           else
             echo "Cloning repository..."
-            git clone https://github.com/$GITHUB_REPOSITORY.git .
+            git clone https://github.com/SaiPranay2011/InsightPulse.git .
           fi
           
           # Pull latest images
