@@ -7,8 +7,13 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Add logging to see CORS being configured
+builder.Logging.AddConsole();
+
+// Add services
 builder.Services.AddControllers();
 
+// Database
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
     options.UseNpgsql(
@@ -17,18 +22,20 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     );
 });
 
+// Redis Cache
 builder.Services.AddStackExchangeRedisCache(options =>
 {
     options.Configuration = builder.Configuration.GetConnectionString("Redis");
 });
 
-// Register services
+// Application Services
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IMetricService, MetricService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 builder.Services.AddScoped<IAlertService, AlertService>();
 builder.Services.AddHttpClient<IAlertService, AlertService>();
 
+// JWT Configuration
 var jwtSettings = builder.Configuration.GetSection("Jwt");
 var key = Encoding.ASCII.GetBytes(jwtSettings["Key"]);
 
@@ -54,40 +61,55 @@ builder.Services.AddAuthentication(x =>
     };
 });
 
-// CORS Configuration - UPDATED WITH PRODUCTION IPv4
+// CORS - CRITICAL: Must be added BEFORE building app
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
         policy
             .WithOrigins(
-                "http://localhost:3000",              // Local development
-                "http://localhost:3001",              // Local development alternate
-                "http://3.22.167.100:3000",           // Production IPv4
-                "https://3.22.167.100:3000",          // Production IPv4 HTTPS (if added)
-                "http://3.22.167.100",                // Production IPv4 without port
-                "https://3.22.167.100"                // Production IPv4 HTTPS without port
+                "http://localhost:3000",
+                "http://localhost:3001",
+                "http://3.22.167.100:3000",
+                "https://3.22.167.100:3000",
+                "http://3.22.167.100",
+                "https://3.22.167.100"
             )
-            .AllowAnyMethod()                         // GET, POST, PUT, DELETE, OPTIONS, etc.
-            .AllowAnyHeader()                         // Content-Type, Authorization, etc.
-            .AllowCredentials();                      // For JWT tokens
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
     });
 });
 
 var app = builder.Build();
 
+// Log that app is starting
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+logger.LogInformation("=== Application Starting ===");
+logger.LogInformation($"Environment: {app.Environment.EnvironmentName}");
+
 app.UseHttpsRedirection();
 
-// CORS must be applied BEFORE Authentication and Authorization
+// CRITICAL: UseCors MUST come BEFORE UseAuthentication
+logger.LogInformation("Applying CORS policy");
 app.UseCors("AllowFrontend");
 
+logger.LogInformation("Setting up authentication");
 app.UseAuthentication();
+
+logger.LogInformation("Setting up authorization");
 app.UseAuthorization();
 
+// Map controllers
 app.MapControllers();
 
-// Health check endpoint for Docker healthcheck
-app.MapGet("/api/health", () => 
-    Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }));
+// Health check endpoint (used by Docker and monitoring)
+app.MapGet("/api/health", () =>
+{
+    return Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow });
+});
+
+logger.LogInformation("=== Application Ready ===");
+logger.LogInformation("CORS enabled for: http://3.22.167.100:3000, http://localhost:3000");
 
 app.Run();
