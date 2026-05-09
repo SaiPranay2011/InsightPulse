@@ -148,20 +148,26 @@ jobs:
         
         echo "===== Deployment Started ====="
         
-        # Update .env.prod with latest secrets
-        echo "Updating .env.prod..."
+        # Create .env.prod with secrets (on server only, not in git)
+        echo "Creating .env.prod..."
         cat > .env.prod << 'ENVFILE'
         DB_PASSWORD=$DB_PASSWORD
         REDIS_PASSWORD=$REDIS_PASSWORD
         JWT_SECRET_KEY=$JWT_SECRET_KEY
         ENVFILE
         chmod 600 .env.prod
-        echo "✓ Environment file updated"
+        echo "✓ Environment file created"
         
         # Pull latest code
         echo "Pulling latest code..."
         git pull origin main || git clone https://github.com/SaiPranay2011/InsightPulse.git .
-        echo "✓ Code updated"
+        echo "✓ Code pulled"
+        
+        # Verify .env.prod still exists (git pull shouldn't remove it)
+        if [ ! -f .env.prod ]; then
+          echo "ERROR: .env.prod missing!"
+          exit 1
+        fi
         
         # Login to Docker
         echo "Logging into Docker..."
@@ -183,11 +189,15 @@ jobs:
         docker system prune -af > /dev/null
         echo "✓ Docker cleaned"
         
-        # Start services with environment variables loaded from .env.prod
-        echo "Starting services..."
+        # CRITICAL: Load environment variables BEFORE docker-compose
+        echo "Loading environment variables..."
         set -a
         source .env.prod
         set +a
+        echo "✓ Environment variables loaded"
+        
+        # Start services with env vars available
+        echo "Starting services..."
         docker-compose -f docker-compose.prod.yml up -d
         echo "✓ Services started"
         
@@ -195,14 +205,15 @@ jobs:
         echo "Waiting 90 seconds for services to stabilize..."
         sleep 90
         
+        # Run migrations
+        echo "Running database migrations..."
+        docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || true
+        echo "✓ Migrations complete"
+        
         # Check status
         echo ""
         echo "Service Status:"
         docker-compose -f docker-compose.prod.yml ps
-        
-        # Run migrations
-        echo "Running database migrations..."
-        docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || true
         
         # Test API
         echo ""
@@ -211,7 +222,7 @@ jobs:
         
         echo ""
         echo "===== Deployment Complete ====="
-        echo "Frontend: http://$DEPLOY_HOST:3000"
-        echo "API: http://$DEPLOY_HOST:5228/api/health"
+        echo "Frontend: http://3.22.167.100:3000"
+        echo "API: http://3.22.167.100:5228/api/health"
         
         DEPLOY_COMMANDS
