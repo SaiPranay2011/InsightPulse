@@ -9,9 +9,16 @@ COPY InsightPulse.Core/ InsightPulse.Core/
 RUN dotnet restore InsightPulse.slnx
 RUN dotnet publish InsightPulse.API/InsightPulse.API.csproj -c Release -o /app/publish
 
-# Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:9.0
+# Runtime stage - Keep SDK for EF Core migrations
+FROM mcr.microsoft.com/dotnet/sdk:9.0
 WORKDIR /app
+
+# Install EF Core tools globally
+RUN dotnet tool install --global dotnet-ef
+
+# Add dotnet tools to PATH
+ENV PATH="${PATH}:/root/.dotnet/tools"
+
 COPY --from=build /app/publish .
 
 EXPOSE 5228
