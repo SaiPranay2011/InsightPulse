@@ -1,4 +1,5 @@
 import { jwtDecode } from 'jwt-decode';
+import { api } from './api';
 
 export interface DecodedToken {
   'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier': string;
@@ -8,28 +9,24 @@ export interface DecodedToken {
 }
 
 export const auth = {
+  // Use the shared api client (which has the correct base URL baked in at build time)
+  // rather than calling process.env.NEXT_PUBLIC_API_URL directly, which resolves to
+  // "undefined" at runtime if the env var wasn't set during `next build`.
   login: async (email: string, password: string) => {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
+    const response = await api.login(email, password);
+    const { token } = response.data;
 
-    if (!response.ok) throw new Error('Login failed');
-
-    const { token } = await response.json();
-    
-    // Store in localStorage
     if (typeof window !== 'undefined') {
       localStorage.setItem('authToken', token);
     }
-    
+
     return token;
   },
 
   logout: () => {
     if (typeof window !== 'undefined') {
       localStorage.removeItem('authToken');
+      localStorage.removeItem('authUser');
     }
   },
 
@@ -45,7 +42,13 @@ export const auth = {
 
     try {
       const decoded = jwtDecode<DecodedToken>(token);
-      return !!decoded;
+      // Check token hasn't expired
+      const exp = (decoded as any).exp;
+      if (exp && Date.now() / 1000 > exp) {
+        localStorage.removeItem('authToken');
+        return false;
+      }
+      return true;
     } catch {
       return false;
     }

@@ -17,10 +17,7 @@ export default function RegisterPage() {
   });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value,
-    });
+    setFormData({ ...formData, [e.target.name]: e.target.value });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -28,16 +25,26 @@ export default function RegisterPage() {
     setLoading(true);
 
     try {
-      await api.register(
+      const response = await api.register(
         formData.email,
         formData.password,
         formData.firstName,
-        formData.lastName
+        formData.lastName,
       );
-      toast.success('Account created! Logging you in...');
-      setTimeout(() => router.push('/dashboards'), 1000);
-    } catch (error) {
-      toast.error('Registration failed. Email might be taken.');
+
+      // Store the token returned by registration so the user is immediately
+      // authenticated without needing to log in again.
+      const { token } = response.data;
+      if (token && typeof window !== 'undefined') {
+        localStorage.setItem('authToken', token);
+      }
+
+      toast.success('Account created! Redirecting...');
+      router.push('/dashboards');
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.error ?? 'Registration failed. Email might already be taken.';
+      toast.error(message);
     } finally {
       setLoading(false);
     }

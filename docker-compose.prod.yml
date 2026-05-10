@@ -3,6 +3,7 @@
 name: insightpulse
 
 services:
+
   postgres:
     image: postgres:15
     environment:
@@ -28,16 +29,23 @@ services:
     networks:
       - insightpulse
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   api:
     image: ghcr.io/saipranay2011/insightpulse/api:latest
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      ConnectionStrings__DefaultConnection: Server=postgres;Port=5432;Database=insightpulse_prod;User Id=postgres;Password=${DB_PASSWORD};
-      ConnectionStrings__Redis: redis:6379,password=${REDIS_PASSWORD}
+      # ASP.NET Core maps Jwt__Key -> Configuration["Jwt:Key"]
       Jwt__Key: ${JWT_SECRET_KEY}
       Jwt__Issuer: insightpulse
       Jwt__Audience: insightpulse-users
+      Jwt__ExpirationMinutes: 1440
+      ConnectionStrings__DefaultConnection: "Server=postgres;Port=5432;Database=insightpulse_prod;User Id=postgres;Password=${DB_PASSWORD};"
+      ConnectionStrings__Redis: "redis:6379,password=${REDIS_PASSWORD}"
     ports:
       - "5228:5228"
     depends_on:
@@ -47,11 +55,11 @@ services:
       - insightpulse
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5228/api/health"]
-      interval: 30s
-      timeout: 15s
-      retries: 5
-      start_period: 60s
+      test: ["CMD-SHELL", "curl -sf http://localhost:5228/api/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
 
   frontend:
     image: ghcr.io/saipranay2011/insightpulse/frontend:latest
@@ -60,12 +68,13 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks:
       - insightpulse
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -11,6 +11,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # ── Backend tests ─────────────────────────────────────────────────────────────
   test-backend:
     runs-on: ubuntu-latest
     services:
@@ -25,7 +26,6 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-
       redis:
         image: redis:7-alpine
         options: >-
@@ -45,17 +45,17 @@ jobs:
         dotnet-version: '9.0.x'
 
     - name: Restore dependencies
-      run: dotnet restore InsightPulse.API/
+      run: dotnet restore InsightPulse.slnx
 
     - name: Build
-      run: dotnet build InsightPulse.API/ --no-restore --configuration Release
+      run: dotnet build InsightPulse.slnx --no-restore --configuration Release
 
     - name: Run tests
-      run: dotnet test InsightPulse.API/ --no-build --verbosity normal || true
+      run: dotnet test InsightPulse.slnx --no-build --verbosity normal || true
 
+  # ── Frontend tests ────────────────────────────────────────────────────────────
   test-frontend:
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v3
 
@@ -71,7 +71,12 @@ jobs:
 
     - name: Build
       run: cd frontend && npm run build
+      env:
+        # Provide a dummy URL so NEXT_PUBLIC_API_URL is defined during CI build.
+        # The real value is baked in at image-build time via the Docker build ARG.
+        NEXT_PUBLIC_API_URL: http://localhost:5228/api
 
+  # ── Build & push Docker images ────────────────────────────────────────────────
   build-and-push:
     needs: [test-backend, test-frontend]
     runs-on: ubuntu-latest
@@ -94,11 +99,12 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Convert image name to lowercase
+    - name: Normalise image name to lowercase
       id: image
-      run: echo "image_name=$(echo ${{ env.IMAGE_NAME }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+      run: |
+        echo "image_name=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-    - name: Build and push backend
+    - name: Build and push API image
       uses: docker/build-push-action@v4
       with:
         context: .
@@ -108,18 +114,21 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: Build and push frontend
+    - name: Build and push frontend image
       uses: docker/build-push-action@v4
       with:
         context: ./frontend
         file: ./frontend/Dockerfile
         push: true
         tags: ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}/frontend:latest
+        # NEXT_PUBLIC_API_URL must be a build ARG — next build inlines it into the
+        # JS bundle at compile time, so setting it as a runtime ENV has no effect.
         build-args: |
           NEXT_PUBLIC_API_URL=http://${{ secrets.DEPLOY_HOST }}:5228/api
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
+  # ── Deploy ────────────────────────────────────────────────────────────────────
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
@@ -130,106 +139,104 @@ jobs:
 
     - name: Deploy to production
       env:
-        DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-        DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DEPLOY_KEY:     ${{ secrets.DEPLOY_KEY }}
+        DEPLOY_HOST:    ${{ secrets.DEPLOY_HOST }}
+        DEPLOY_USER:    ${{ secrets.DEPLOY_USER }}
+        DB_PASSWORD:    ${{ secrets.DB_PASSWORD }}
         REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
         JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
       run: |
         mkdir -p ~/.ssh
         echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
         chmod 600 ~/.ssh/deploy_key
-        ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+        ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-        # Write .env.prod on the runner, then scp it to the server.
-        # Bug fix: the original used << 'ENVFILE' (quoted heredoc) inside the SSH block,
-        # which prevents variable expansion — the file contained literal "$JWT_SECRET_KEY"
-        # instead of the actual secret value, causing the zero-length JWT key crash.
-        cat > /tmp/.env.prod << EOF
+        # Write .env.prod here on the Actions runner where secrets are already
+        # expanded as shell variables.  Using an unquoted EOF heredoc means the
+        # variables ARE substituted.  The file is then scp-d to the server.
+        #
+        # This avoids the original bug: the old code wrote .env.prod inside
+        # << 'DEPLOY_COMMANDS' (quoted marker), which is a nested quoted heredoc.
+        # Bash treats everything inside a quoted heredoc literally — so the file
+        # contained the text "$JWT_SECRET_KEY" rather than the actual secret,
+        # causing the zero-length JWT key crash on every request.
+        cat > /tmp/env_prod << ENVEOF
         DB_PASSWORD=${DB_PASSWORD}
         REDIS_PASSWORD=${REDIS_PASSWORD}
         JWT_SECRET_KEY=${JWT_SECRET_KEY}
-        EOF
-        chmod 600 /tmp/.env.prod
-        scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
-          /tmp/.env.prod $DEPLOY_USER@$DEPLOY_HOST:/app/insightpulse/.env.prod
+        DEPLOY_HOST=${DEPLOY_HOST}
+        ENVEOF
+        chmod 600 /tmp/env_prod
 
         ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
-          $DEPLOY_USER@$DEPLOY_HOST << 'DEPLOY_COMMANDS'
-        
+          "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p /app/insightpulse"
+
+        scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          /tmp/env_prod "$DEPLOY_USER@$DEPLOY_HOST:/app/insightpulse/.env.prod"
+
+        ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          "$DEPLOY_USER@$DEPLOY_HOST" << 'DEPLOY_COMMANDS'
+
         set -e
         cd /app/insightpulse
-        
+
         echo "===== Deployment Started ====="
-        echo "✓ Environment file already written by runner (scp)"
-        
-        # Pull latest code
+
         echo "Pulling latest code..."
-        git pull origin main || git clone https://github.com/SaiPranay2011/InsightPulse.git .
-        echo "✓ Code pulled"
-        
-        # Verify .env.prod still exists (git pull shouldn't remove it)
+        if [ -d .git ]; then
+          git pull origin main
+        else
+          git clone https://github.com/SaiPranay2011/InsightPulse.git .
+        fi
+        echo "Code pulled."
+
         if [ ! -f .env.prod ]; then
-          echo "ERROR: .env.prod missing!"
+          echo "ERROR: .env.prod missing after git pull — aborting"
           exit 1
         fi
-        
-        # Login to Docker
-        echo "Logging into Docker..."
-        echo "$GITHUB_TOKEN" | docker login -u SaiPranay2011 --password-stdin ghcr.io || true
-        echo "✓ Docker login complete"
-        
-        # Pull images
-        echo "Pulling Docker images..."
-        docker-compose -f docker-compose.prod.yml pull
-        echo "✓ Images pulled"
-        
-        # Stop old services
-        echo "Stopping old services..."
-        docker-compose -f docker-compose.prod.yml down || true
-        echo "✓ Old services stopped"
-        
-        # Clean Docker
-        echo "Cleaning Docker resources..."
-        docker system prune -af > /dev/null
-        echo "✓ Docker cleaned"
-        
-        # CRITICAL: Load environment variables BEFORE docker-compose
-        echo "Loading environment variables..."
+
         set -a
         source .env.prod
         set +a
-        echo "✓ Environment variables loaded"
-        
-        # Start services with env vars available
+        echo "Environment variables loaded."
+
+        DC="docker compose"
+        docker compose version >/dev/null 2>&1 || DC="docker-compose"
+
+        echo "Pulling Docker images..."
+        $DC -f docker-compose.prod.yml pull
+        echo "Images pulled."
+
+        echo "Stopping old services..."
+        $DC -f docker-compose.prod.yml down --remove-orphans || true
+
         echo "Starting services..."
-        docker-compose -f docker-compose.prod.yml up -d
-        echo "✓ Services started"
-        
-        # Wait for services
-        echo "Waiting 90 seconds for services to stabilize..."
-        sleep 90
-        
-        # Run migrations
-        echo "Running database migrations..."
-        docker-compose -f docker-compose.prod.yml exec -T api \
-          sh -c 'cd /app/InsightPulse.API && dotnet ef database update --no-build' || true
-        echo "✓ Migrations complete"
-        
-        # Check status
+        $DC -f docker-compose.prod.yml up -d
+        echo "Services started."
+
+        # DB migrations run automatically on API startup via db.MigrateAsync()
+        # in Program.cs — no separate "dotnet ef database update" step needed.
+
+        echo "Waiting for API to become healthy (up to 4 min)..."
+        for i in $(seq 1 24); do
+          if curl -sf http://localhost:5228/api/health > /dev/null 2>&1; then
+            echo "API is healthy (attempt $i)."
+            break
+          fi
+          if [ "$i" -eq 24 ]; then
+            echo "WARNING: API did not become healthy in time. Last logs:"
+            $DC -f docker-compose.prod.yml logs --tail=50 api
+          fi
+          echo "  Attempt $i/24 — retrying in 10s..."
+          sleep 10
+        done
+
         echo ""
-        echo "Service Status:"
-        docker-compose -f docker-compose.prod.yml ps
-        
-        # Test API
-        echo ""
-        echo "Testing API health..."
-        curl -s http://localhost:5228/api/health || echo "API not ready yet"
-        
+        $DC -f docker-compose.prod.yml ps
+
         echo ""
         echo "===== Deployment Complete ====="
-        echo "Frontend: http://3.22.167.100:3000"
-        echo "API: http://3.22.167.100:5228/api/health"
-        
+        echo "Frontend : http://$DEPLOY_HOST:3000"
+        echo "API      : http://$DEPLOY_HOST:5228/api/health"
+
         DEPLOY_COMMANDS

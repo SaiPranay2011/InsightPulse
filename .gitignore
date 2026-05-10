@@ -5,7 +5,6 @@ obj/
 .vscode/
 *.user
 *.suo
-appsettings.Production.json
 
 # Frontend
 node_modules/
