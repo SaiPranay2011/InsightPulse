@@ -1,9 +1,10 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/compose-spec/compose-spec/master/schema/compose-spec.json
 
+name: insightpulse
+
 services:
   postgres:
     image: postgres:15
-    # REMOVE env_file: .env.prod from here
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -21,7 +22,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    # REMOVE env_file: .env.prod from here
     command: redis-server --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
@@ -31,8 +31,6 @@ services:
 
   api:
     image: ghcr.io/saipranay2011/insightpulse/api:latest
-    # KEEP env_file: .env.prod ONLY for api
-    env_file: .env.prod
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ConnectionStrings__DefaultConnection: Server=postgres;Port=5432;Database=insightpulse_prod;User Id=postgres;Password=${DB_PASSWORD};
@@ -57,9 +55,7 @@ services:
 
   frontend:
     image: ghcr.io/saipranay2011/insightpulse/frontend:latest
-    # REMOVE env_file: .env.prod from here
     environment:
-      NEXT_PUBLIC_API_URL: http://3.22.167.100:5228/api
       NODE_ENV: production
     ports:
       - "3000:3000"

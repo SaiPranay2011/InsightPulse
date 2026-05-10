@@ -19,7 +19,18 @@ RUN dotnet tool install --global dotnet-ef
 # Add dotnet tools to PATH
 ENV PATH="${PATH}:/root/.dotnet/tools"
 
-COPY --from=build /app/publish .
+# Copy published output
+COPY --from=build /app/publish ./publish
+
+# Copy source files needed by dotnet-ef for migrations
+COPY InsightPulse.slnx .
+COPY InsightPulse.API/ InsightPulse.API/
+COPY InsightPulse.Core/ InsightPulse.Core/
+
+# Restore so dotnet-ef can resolve the project
+RUN dotnet restore InsightPulse.slnx
+
+WORKDIR /app/publish
 
 EXPOSE 5228
 ENV ASPNETCORE_URLS=http://+:5228

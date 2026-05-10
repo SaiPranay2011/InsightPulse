@@ -88,11 +88,15 @@ var logger = app.Services.GetRequiredService<ILogger<Program>>();
 logger.LogInformation("=== Application Starting ===");
 logger.LogInformation($"Environment: {app.Environment.EnvironmentName}");
 
-app.UseHttpsRedirection();
-
-// CRITICAL: UseCors MUST come BEFORE UseAuthentication
+// CRITICAL: UseCors MUST come BEFORE UseAuthentication and UseHttpsRedirection
 logger.LogInformation("Applying CORS policy");
 app.UseCors("AllowFrontend");
+
+// Only redirect to HTTPS in production with a real cert; not needed behind a reverse proxy
+if (!app.Environment.IsDevelopment())
+{
+    // app.UseHttpsRedirection(); // Disabled: HTTPS is handled by the reverse proxy (nginx)
+}
 
 logger.LogInformation("Setting up authentication");
 app.UseAuthentication();

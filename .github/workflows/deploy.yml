@@ -115,6 +115,8 @@ jobs:
         file: ./frontend/Dockerfile
         push: true
         tags: ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}/frontend:latest
+        build-args: |
+          NEXT_PUBLIC_API_URL=http://${{ secrets.DEPLOY_HOST }}:5228/api
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -207,7 +209,8 @@ jobs:
         
         # Run migrations
         echo "Running database migrations..."
-        docker-compose -f docker-compose.prod.yml exec -T api dotnet ef database update || true
+        docker-compose -f docker-compose.prod.yml exec -T api \
+          sh -c 'cd /app/InsightPulse.API && dotnet ef database update --no-build' || true
         echo "✓ Migrations complete"
         
         # Check status
