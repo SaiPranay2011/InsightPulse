@@ -217,19 +217,30 @@ jobs:
         # DB migrations run automatically on API startup via db.MigrateAsync()
         # in Program.cs — no separate "dotnet ef database update" step needed.
 
+        # Wait for API — poll the health endpoint every 10 s for up to 4 min.
+        # If it never becomes healthy, print the full container logs so the cause
+        # is visible in the GitHub Actions run without needing to SSH in.
         echo "Waiting for API to become healthy (up to 4 min)..."
+        API_HEALTHY=false
         for i in $(seq 1 24); do
           if curl -sf http://localhost:5228/api/health > /dev/null 2>&1; then
             echo "API is healthy (attempt $i)."
+            API_HEALTHY=true
             break
-          fi
-          if [ "$i" -eq 24 ]; then
-            echo "WARNING: API did not become healthy in time. Last logs:"
-            $DC -f docker-compose.prod.yml logs --tail=50 api
           fi
           echo "  Attempt $i/24 — retrying in 10s..."
           sleep 10
         done
+
+        if [ "$API_HEALTHY" = "false" ]; then
+          echo ""
+          echo "ERROR: API did not become healthy. Container logs:"
+          $DC -f docker-compose.prod.yml logs --tail=100 api
+          echo ""
+          echo "Postgres logs:"
+          $DC -f docker-compose.prod.yml logs --tail=20 postgres
+          exit 1
+        fi
 
         echo ""
         $DC -f docker-compose.prod.yml ps

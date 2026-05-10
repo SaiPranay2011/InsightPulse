@@ -30,9 +30,9 @@ services:
       - insightpulse
     restart: unless-stopped
     healthcheck:
-      # Use CMD-SHELL so the shell expands $REDIS_PASSWORD at runtime.
-      # Compose does NOT interpolate ${VAR} inside the CMD array form.
-      test: ["CMD-SHELL", "redis-cli -a $REDIS_PASSWORD ping | grep -q PONG"]
+      # CMD-SHELL is required — compose does not interpolate ${VAR} inside the
+      # CMD array form, so redis-cli would receive the literal string "${REDIS_PASSWORD}".
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -41,28 +41,37 @@ services:
     image: ghcr.io/saipranay2011/insightpulse/api:latest
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      # ASP.NET Core maps Jwt__Key -> Configuration["Jwt:Key"]
+      ConnectionStrings__DefaultConnection: "Server=postgres;Port=5432;Database=insightpulse_prod;User Id=postgres;Password=${DB_PASSWORD};"
+      ConnectionStrings__Redis: "redis:6379,password=${REDIS_PASSWORD}"
       Jwt__Key: ${JWT_SECRET_KEY}
       Jwt__Issuer: insightpulse
       Jwt__Audience: insightpulse-users
-      Jwt__ExpirationMinutes: 1440
-      ConnectionStrings__DefaultConnection: "Server=postgres;Port=5432;Database=insightpulse_prod;User Id=postgres;Password=${DB_PASSWORD};"
-      ConnectionStrings__Redis: "redis:6379,password=${REDIS_PASSWORD}"
+      Jwt__ExpirationMinutes: "1440"
+      # Inject allowed CORS origins so Program.cs can read them without hardcoding the IP.
+      Cors__AllowedOrigins__0: "http://${DEPLOY_HOST}:3000"
+      Cors__AllowedOrigins__1: "https://${DEPLOY_HOST}:3000"
+      Cors__AllowedOrigins__2: "http://${DEPLOY_HOST}"
+      Cors__AllowedOrigins__3: "https://${DEPLOY_HOST}"
     ports:
       - "5228:5228"
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - insightpulse
     restart: unless-stopped
     healthcheck:
-      # wget is available in mcr.microsoft.com/dotnet/aspnet — curl is not.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:5228/api/health > /dev/null 2>&1 || exit 1"]
-      interval: 20s
+      # curl is explicitly installed in the API Dockerfile (aspnet:9.0 does not
+      # include curl or wget by default — the image is debian:bookworm-slim).
+      test: ["CMD", "curl", "-f", "http://localhost:5228/api/health"]
+      interval: 15s
       timeout: 10s
-      retries: 6
-      start_period: 60s
+      retries: 8
+      # start_period gives the app time to run migrations before healthcheck
+      # failures count. 6 retries × 5 s backoff + migration time ≈ 90 s max.
+      start_period: 90s
 
   frontend:
     image: ghcr.io/saipranay2011/insightpulse/frontend:latest
@@ -77,10 +86,12 @@ services:
       - insightpulse
     restart: unless-stopped
     healthcheck:
+      # node:20-alpine includes wget but not curl
       test: ["CMD-SHELL", "wget -qO- http://localhost:3000 > /dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
 volumes:
   postgres_data:
