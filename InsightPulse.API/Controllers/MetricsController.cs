@@ -86,7 +86,8 @@ namespace InsightPulse.API.Controllers
         public async Task<IActionResult> GetAggregatedMetric(
             string metricName,
             [FromQuery] int level = 1,
-            [FromQuery] DateTime? periodStart = null)
+            [FromQuery] DateTime? periodStart = null,
+            [FromQuery] string? dimension = null)
         {
             if (periodStart == null)
                 periodStart = DateTime.UtcNow.Date;
@@ -102,7 +103,8 @@ namespace InsightPulse.API.Controllers
                     tenantId,
                     metricName,
                     (AggregationLevel)level,
-                    (DateTime)periodStart);
+                    (DateTime)periodStart,
+                    dimension);
 
                 return Ok(metric);
             }

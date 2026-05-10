@@ -75,26 +75,20 @@ export default function DashboardDetailPage() {
   const handleAddWidget = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      // Call custom API to add widget with full config
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/dashboards/${dashboardId}/widgets`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${auth.getToken()}`,
-        },
-        body: JSON.stringify({
-          title: newWidget.title,
-          type: newWidget.type,
-          metric: newWidget.metric,
-          dimension: newWidget.dimension === 'global' ? null : newWidget.dimension,
-          positionX: newWidget.positionX,
-          positionY: newWidget.positionY,
-          width: newWidget.width,
-          height: newWidget.height,
-        }),
-      });
-
-      if (!response.ok) throw new Error('Failed to add widget');
+      // Use api client — NOT raw fetch with process.env.NEXT_PUBLIC_API_URL.
+      // process.env.NEXT_PUBLIC_API_URL evaluates to "undefined" at runtime if
+      // it wasn't set during `next build`, producing requests to /undefined/...
+      await api.addWidget(
+        dashboardId,
+        newWidget.title,
+        newWidget.type,
+        newWidget.metric,
+        newWidget.dimension === 'global' ? undefined : newWidget.dimension,
+        newWidget.positionX,
+        newWidget.positionY,
+        newWidget.width,
+        newWidget.height,
+      );
 
       toast.success('Widget added!');
       setNewWidget({

@@ -53,9 +53,9 @@ class ApiClient {
     });
   }
 
-  getAggregatedMetric(metricName: string, level: number = 1, periodStart?: string) {
+  getAggregatedMetric(metricName: string, level: number = 1, periodStart?: string, dimension?: string) {
     return this.instance.get(`/metrics/aggregated/${metricName}`, {
-      params: { level, periodStart },
+      params: { level, periodStart, dimension },
     });
   }
 
@@ -77,16 +77,26 @@ class ApiClient {
     });
   }
 
-  addWidget(dashboardId: string, title: string, type: number, metric: string, dimension?: string) {
+  addWidget(
+    dashboardId: string,
+    title: string,
+    type: number,
+    metric: string,
+    dimension?: string,
+    positionX = 0,
+    positionY = 0,
+    width = 6,
+    height = 3,
+  ) {
     return this.instance.post(`/dashboards/${dashboardId}/widgets`, {
       title,
       type,
       metric,
       dimension,
-      positionX: 0,
-      positionY: 0,
-      width: 6,
-      height: 3,
+      positionX,
+      positionY,
+      width,
+      height,
     });
   }
 

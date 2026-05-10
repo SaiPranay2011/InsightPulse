@@ -41,10 +41,13 @@ export default function ChartWidget({ metric, title, type, dimension }: ChartWid
 
       if (timeRange === '7d') startDate.setDate(today.getDate() - 7);
       else if (timeRange === '30d') startDate.setDate(today.getDate() - 30);
-      else if (timeRange === '1d') startDate = new Date(today);
+      else if (timeRange === '1d') startDate = new Date(today); // same calendar day
 
+      // Always use start-of-day for startDate and end-of-day for endDate so
+      // the full day's data is included. The original '1d' branch set startDate
+      // to the current moment, which excluded all data ingested earlier today.
       const start = startDate.toISOString().split('T')[0];
-      const end = today.toISOString().split('T')[0];
+      const end   = today.toISOString().split('T')[0];
 
       const response = await api.getMetrics(
         metric,

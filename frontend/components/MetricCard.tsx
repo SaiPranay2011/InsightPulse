@@ -31,7 +31,15 @@ export default function MetricCard({ metric, title, dimension }: MetricCardProps
   const fetchMetric = async () => {
     try {
       const today = new Date().toISOString().split('T')[0];
-      const response = await api.getAggregatedMetric(metric, 1, `${today}T00:00:00Z`);
+      // Pass dimension so the card respects the widget's dimension filter.
+      // Without this, all widgets aggregate across all dimensions regardless
+      // of the dimension the widget was configured with.
+      const response = await api.getAggregatedMetric(
+        metric,
+        1,
+        `${today}T00:00:00Z`,
+        dimension || undefined
+      );
       setData(response.data);
     } catch (error) {
       console.error('Failed to fetch metric');

@@ -15,8 +15,8 @@ namespace InsightPulse.API.Services
     {
         Task<MetricDataDto> IngestMetricAsync(Guid tenantId, IngestMetricRequest request);
         Task<List<MetricDataDto>> GetMetricsAsync(Guid tenantId, string metricName, DateTime startDate, DateTime endDate, string? dimension = null);
-        Task<AggregatedMetricDto> GetAggregatedMetricAsync(Guid tenantId, string metricName, AggregationLevel level, DateTime periodStart);
-        Task RefreshAggregationsAsync(Guid tenantId);  // Add this
+        Task<AggregatedMetricDto> GetAggregatedMetricAsync(Guid tenantId, string metricName, AggregationLevel level, DateTime periodStart, string? dimension = null);
+        Task RefreshAggregationsAsync(Guid tenantId);
     }
 
     public class MetricService : IMetricService
@@ -36,10 +36,10 @@ namespace InsightPulse.API.Services
         {
             var metricData = new MetricData
             {
-                Id = Guid.NewGuid(),
-                TenantId = tenantId,
+                Id        = Guid.NewGuid(),
+                TenantId  = tenantId,
                 MetricName = request.MetricName,
-                Value = request.Value,
+                Value     = request.Value,
                 Dimension = request.Dimension,
                 Timestamp = DateTime.UtcNow
             };
@@ -47,25 +47,29 @@ namespace InsightPulse.API.Services
             _context.MetricData.Add(metricData);
             await _context.SaveChangesAsync();
 
-            var cacheKey = $"metrics:{tenantId}:{request.MetricName}";
+            // Invalidate any cached aggregation for this metric so the next read
+            // reflects the newly ingested value immediately.
+            var cacheKey = $"agg:{tenantId}:{request.MetricName}:{request.Dimension}";
             await _cache.RemoveAsync(cacheKey);
 
-            // Check alerts asynchronously (don't wait for response)
+            // Check alerts (fire-and-forget)
             _ = _alertService.CheckAlertsAsync(tenantId, request.MetricName, request.Value);
 
             return MapToDto(metricData);
         }
 
         public async Task<List<MetricDataDto>> GetMetricsAsync(
-            Guid tenantId, 
-            string metricName, 
-            DateTime startDate, 
-            DateTime endDate, 
+            Guid tenantId,
+            string metricName,
+            DateTime startDate,
+            DateTime endDate,
             string? dimension = null)
         {
             var query = _context.MetricData
-                .Where(m => m.TenantId == tenantId && m.MetricName == metricName)
-                .Where(m => m.Timestamp >= startDate && m.Timestamp <= endDate);
+                .Where(m => m.TenantId == tenantId
+                         && m.MetricName == metricName
+                         && m.Timestamp >= startDate
+                         && m.Timestamp <= endDate);
 
             if (!string.IsNullOrEmpty(dimension))
                 query = query.Where(m => m.Dimension == dimension);
@@ -77,91 +81,169 @@ namespace InsightPulse.API.Services
             return metrics.Select(MapToDto).ToList();
         }
 
+        /// <summary>
+        /// Returns aggregated stats for a metric over a period.
+        ///
+        /// Strategy:
+        ///   1. Check the pre-aggregated table first (populated by RefreshAggregationsAsync).
+        ///   2. If no pre-aggregated row exists, compute the aggregation live from raw
+        ///      MetricData rows. This ensures widgets always show real data even before
+        ///      the background aggregation job has run — which was the reason all widgets
+        ///      showed zeros on a fresh deployment.
+        /// </summary>
         public async Task<AggregatedMetricDto> GetAggregatedMetricAsync(
-            Guid tenantId, 
-            string metricName, 
-            AggregationLevel level, 
-            DateTime periodStart)
+            Guid tenantId,
+            string metricName,
+            AggregationLevel level,
+            DateTime periodStart,
+            string? dimension = null)
         {
-            var agg = await _context.AggregatedMetrics
-                .FirstOrDefaultAsync(a => 
-                    a.TenantId == tenantId && 
-                    a.MetricName == metricName && 
-                    a.Level == level && 
-                    a.PeriodStart == periodStart);
-
-            if (agg == null)
-                return new AggregatedMetricDto();
-
-            return new AggregatedMetricDto
+            // 1. Try cache
+            var cacheKey = $"agg:{tenantId}:{metricName}:{dimension}:{level}:{periodStart:yyyyMMdd}";
+            var cached = await _cache.GetStringAsync(cacheKey);
+            if (cached != null)
             {
-                Sum = agg.Sum,
-                Average = agg.Average,
-                Min = agg.Min,
-                Max = agg.Max,
-                Count = agg.Count
+                var cachedDto = JsonSerializer.Deserialize<AggregatedMetricDto>(cached);
+                if (cachedDto != null) return cachedDto;
+            }
+
+            // 2. Try pre-aggregated table
+            var aggQuery = _context.AggregatedMetrics
+                .Where(a => a.TenantId  == tenantId
+                         && a.MetricName == metricName
+                         && a.Level      == level
+                         && a.PeriodStart == periodStart);
+
+            if (!string.IsNullOrEmpty(dimension))
+                aggQuery = aggQuery.Where(a => a.Dimension == dimension);
+
+            var agg = await aggQuery.FirstOrDefaultAsync();
+            if (agg != null)
+            {
+                var preAggDto = new AggregatedMetricDto
+                {
+                    Sum     = agg.Sum,
+                    Average = agg.Average,
+                    Min     = agg.Min,
+                    Max     = agg.Max,
+                    Count   = agg.Count
+                };
+                await CacheDto(cacheKey, preAggDto, TimeSpan.FromMinutes(5));
+                return preAggDto;
+            }
+
+            // 3. Compute live from raw data
+            //    For Daily level: aggregate the full calendar day of periodStart.
+            //    This is the critical fix — without this, brand-new deployments with
+            //    no pre-aggregated rows always return zeros.
+            var periodEnd = level switch
+            {
+                AggregationLevel.Daily   => periodStart.AddDays(1),
+                AggregationLevel.Weekly  => periodStart.AddDays(7),
+                AggregationLevel.Monthly => periodStart.AddMonths(1),
+                _                        => periodStart.AddDays(1)
             };
+
+            var rawQuery = _context.MetricData
+                .Where(m => m.TenantId   == tenantId
+                         && m.MetricName == metricName
+                         && m.Timestamp  >= periodStart
+                         && m.Timestamp  <  periodEnd);
+
+            if (!string.IsNullOrEmpty(dimension))
+                rawQuery = rawQuery.Where(m => m.Dimension == dimension);
+
+            var values = await rawQuery.Select(m => m.Value).ToListAsync();
+
+            if (values.Count == 0)
+                return new AggregatedMetricDto(); // all zeros — no data ingested yet
+
+            var liveDto = new AggregatedMetricDto
+            {
+                Sum     = values.Sum(),
+                Average = values.Average(),
+                Min     = values.Min(),
+                Max     = values.Max(),
+                Count   = values.Count
+            };
+
+            // Cache live aggregations for a shorter window so fresh ingests show up quickly
+            await CacheDto(cacheKey, liveDto, TimeSpan.FromSeconds(30));
+            return liveDto;
         }
 
-        // NEW: Create aggregated metrics from raw data
+        /// <summary>
+        /// Pre-computes daily aggregations for yesterday and stores them in the
+        /// AggregatedMetrics table. Call this from a scheduled job / cron so that
+        /// GetAggregatedMetricAsync can serve cached rows instead of raw scans.
+        /// </summary>
         public async Task RefreshAggregationsAsync(Guid tenantId)
         {
-            // Get yesterday's date
             var yesterday = DateTime.UtcNow.AddDays(-1).Date;
 
-            // Group raw metrics by metric name
             var rawData = await _context.MetricData
                 .Where(m => m.TenantId == tenantId && m.Timestamp.Date == yesterday)
                 .GroupBy(m => new { m.MetricName, m.Dimension })
                 .ToListAsync();
 
-            // For each group, calculate sum, avg, min, max
             foreach (var group in rawData)
             {
                 var values = group.Select(m => m.Value).ToList();
 
-                // Delete old aggregation if exists
                 var existing = await _context.AggregatedMetrics
-                    .FirstOrDefaultAsync(a => 
-                        a.TenantId == tenantId &&
-                        a.MetricName == group.Key.MetricName &&
-                        a.Dimension == group.Key.Dimension &&
-                        a.Level == AggregationLevel.Daily &&
-                        a.PeriodStart == yesterday);
+                    .FirstOrDefaultAsync(a =>
+                        a.TenantId   == tenantId
+                     && a.MetricName == group.Key.MetricName
+                     && a.Dimension  == group.Key.Dimension
+                     && a.Level      == AggregationLevel.Daily
+                     && a.PeriodStart == yesterday);
 
                 if (existing != null)
                     _context.AggregatedMetrics.Remove(existing);
 
-                // Create new aggregation
-                var agg = new AggregatedMetric
+                _context.AggregatedMetrics.Add(new AggregatedMetric
                 {
-                    Id = Guid.NewGuid(),
-                    TenantId = tenantId,
+                    Id          = Guid.NewGuid(),
+                    TenantId   = tenantId,
                     MetricName = group.Key.MetricName,
-                    Level = AggregationLevel.Daily,
+                    Level       = AggregationLevel.Daily,
                     PeriodStart = yesterday,
-                    PeriodEnd = yesterday.AddDays(1),
-                    Sum = values.Sum(),
-                    Average = values.Average(),
-                    Min = values.Min(),
-                    Max = values.Max(),
-                    Count = values.Count,
-                    Dimension = group.Key.Dimension
-                };
-
-                _context.AggregatedMetrics.Add(agg);
+                    PeriodEnd   = yesterday.AddDays(1),
+                    Sum         = values.Sum(),
+                    Average     = values.Average(),
+                    Min         = values.Min(),
+                    Max         = values.Max(),
+                    Count       = values.Count,
+                    Dimension   = group.Key.Dimension
+                });
             }
 
             await _context.SaveChangesAsync();
         }
 
-        private MetricDataDto MapToDto(MetricData metric) => new()
+        private async Task CacheDto(string key, AggregatedMetricDto dto, TimeSpan ttl)
         {
-            Id = metric.Id,
+            try
+            {
+                var json = JsonSerializer.Serialize(dto);
+                await _cache.SetStringAsync(key, json, new DistributedCacheEntryOptions
+                {
+                    AbsoluteExpirationRelativeToNow = ttl
+                });
+            }
+            catch
+            {
+                // Cache failures are non-fatal — the app continues without caching
+            }
+        }
+
+        private static MetricDataDto MapToDto(MetricData metric) => new()
+        {
+            Id         = metric.Id,
             MetricName = metric.MetricName,
-            Value = metric.Value,
-            Dimension = metric.Dimension,
-            Timestamp = metric.Timestamp
+            Value      = metric.Value,
+            Dimension  = metric.Dimension,
+            Timestamp  = metric.Timestamp
         };
     }
 }
