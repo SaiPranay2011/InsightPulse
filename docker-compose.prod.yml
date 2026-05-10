@@ -24,15 +24,17 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --requirepass ${REDIS_PASSWORD}
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
     networks:
       - insightpulse
     restart: unless-stopped
     healthcheck:
-      # CMD-SHELL is required — compose does not interpolate ${VAR} inside the
-      # CMD array form, so redis-cli would receive the literal string "${REDIS_PASSWORD}".
-      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      # redis-cli reads the password from REDISCLI_AUTH env var automatically.
+      # This avoids shell variable expansion issues with CMD-SHELL and $$VAR escaping.
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
