@@ -141,7 +141,20 @@ jobs:
         echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
         chmod 600 ~/.ssh/deploy_key
         ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
-        
+
+        # Write .env.prod on the runner, then scp it to the server.
+        # Bug fix: the original used << 'ENVFILE' (quoted heredoc) inside the SSH block,
+        # which prevents variable expansion — the file contained literal "$JWT_SECRET_KEY"
+        # instead of the actual secret value, causing the zero-length JWT key crash.
+        cat > /tmp/.env.prod << EOF
+        DB_PASSWORD=${DB_PASSWORD}
+        REDIS_PASSWORD=${REDIS_PASSWORD}
+        JWT_SECRET_KEY=${JWT_SECRET_KEY}
+        EOF
+        chmod 600 /tmp/.env.prod
+        scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+          /tmp/.env.prod $DEPLOY_USER@$DEPLOY_HOST:/app/insightpulse/.env.prod
+
         ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
           $DEPLOY_USER@$DEPLOY_HOST << 'DEPLOY_COMMANDS'
         
@@ -149,16 +162,7 @@ jobs:
         cd /app/insightpulse
         
         echo "===== Deployment Started ====="
-        
-        # Create .env.prod with secrets (on server only, not in git)
-        echo "Creating .env.prod..."
-        cat > .env.prod << 'ENVFILE'
-        DB_PASSWORD=$DB_PASSWORD
-        REDIS_PASSWORD=$REDIS_PASSWORD
-        JWT_SECRET_KEY=$JWT_SECRET_KEY
-        ENVFILE
-        chmod 600 .env.prod
-        echo "✓ Environment file created"
+        echo "✓ Environment file already written by runner (scp)"
         
         # Pull latest code
         echo "Pulling latest code..."

@@ -37,7 +37,13 @@ builder.Services.AddHttpClient<IAlertService, AlertService>();
 
 // JWT Configuration
 var jwtSettings = builder.Configuration.GetSection("Jwt");
-var key = Encoding.ASCII.GetBytes(jwtSettings["Key"]);
+var jwtKey = jwtSettings["Key"];
+if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
+{
+    throw new InvalidOperationException(
+        "JWT Key is missing or too short. Set Jwt__Key (min 32 chars) via environment variables or appsettings.");
+}
+var key = Encoding.ASCII.GetBytes(jwtKey);
 
 builder.Services.AddAuthentication(x =>
 {
